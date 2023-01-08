@@ -22,6 +22,13 @@ public class SimpleBufferTriggerBuilder<C, E> {
     Consumer<C> consumer;
     boolean isInnerExecutor = false;
 
+    boolean disableSwitchLock = false;
+
+    public SimpleBufferTriggerBuilder setDisableSwitchLock(boolean disableSwitchLock) {
+        this.disableSwitchLock = disableSwitchLock;
+        return this;
+    }
+
     ScheduledExecutorService scheduledExecutorService;
 
     public SimpleBufferTriggerBuilder setInterval(LongSupplier interval) {

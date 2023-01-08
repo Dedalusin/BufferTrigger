@@ -7,6 +7,8 @@ import org.slf4j.LoggerFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
@@ -25,6 +27,10 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
     Consumer<C> consumer;
     Runnable shutdownExecutor;
 
+    ReentrantReadWriteLock.ReadLock readLock;
+
+    ReentrantReadWriteLock.WriteLock writeLock;
+
 
     AtomicLong counter = new AtomicLong();
 
@@ -34,9 +40,21 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
             rejectHandler.accept(e);
             return;
         }
-        if (bufferAdder.test(buffer.get(), e)) {
-            counter.addAndGet(1);
+        try {
+            if (readLock != null) {
+                readLock.lock();
+            }
+            if (bufferAdder.test(buffer.get(), e)) {
+                counter.addAndGet(1);
+            }
+        } catch (Exception exception) {
+            exception.printStackTrace();
+        } finally {
+            if (readLock != null) {
+                readLock.unlock();
+            }
         }
+
     }
 
     @Override
@@ -44,10 +62,26 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
         doConsume();
     }
 
+    /**
+     * 临界变量有两个，1：buffer 2：counter
+     * 虽然这两个的操作自身都是原子的，但两个合起来的事物却是非原子的，所以会出现不一致，因而需要加锁
+     */
     private void doConsume() {
-        C old = buffer.getAndSet(bufferFactory.get());
-        consumer.accept(old);
-        counter.set(0L);
+        try {
+            if (writeLock != null) {
+                writeLock.lock();
+            }
+            C old = buffer.getAndSet(bufferFactory.get());
+            consumer.accept(old);
+            counter.set(0L);
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            if (writeLock != null) {
+                writeLock.unlock();
+            }
+        }
+
     }
 
     @Override
@@ -64,6 +98,14 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
         this.rejectHandler = builder.rejectHandler;
         this.consumer = builder.consumer;
         this.interval = builder.interval;
+        if (!builder.disableSwitchLock) {
+            ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+            readLock = lock.readLock();
+            writeLock = lock.writeLock();
+        } else {
+            readLock = null;
+            writeLock = null;
+        }
         builder.scheduledExecutorService.schedule(new Runnable() {
             @Override
             public void run() {
