@@ -1,7 +1,9 @@
 package org.dedalusin.collection;
 
-public interface BufferTrigger<E> extends AutoCloseable{
+public interface BufferTrigger<E> extends AutoCloseable {
     void enqueue(E e);
 
     void manualDoTrigger();
+
+    void close() throws Exception ;
 }
