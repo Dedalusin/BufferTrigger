@@ -23,7 +23,7 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
     Supplier<C> bufferFactory;
     AtomicReference<C> buffer;
     BiPredicate<C, E> bufferAdder;
-    Consumer<E> rejectHandler;
+    RejectHandler<E> rejectHandler;
     Consumer<C> consumer;
     Runnable shutdownExecutor;
 
@@ -31,14 +31,30 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
 
     ReentrantReadWriteLock.WriteLock writeLock;
 
+    Condition writeCondition;
 
     AtomicLong counter = new AtomicLong();
 
     @Override
     public void enqueue(E e) {
         if (counter.get() >= maxBufferSize.getAsLong()) {
-            rejectHandler.accept(e);
-            return;
+            // 默认通过主要是为了防止某些异常情况时，遗漏消费
+            boolean isPass = true;
+            if (rejectHandler != null && writeLock != null) {
+                try {
+                    writeLock.lock();
+                    if (counter.get() >= maxBufferSize.getAsLong()) {
+                        isPass = !rejectHandler.onReject(e, writeCondition);
+                    }
+                } catch (Exception exception) {
+                    exception.printStackTrace();
+                } finally {
+                    writeLock.unlock();
+                }
+            }
+            if (!isPass) {
+                return;
+            }
         }
         try {
             if (readLock != null) {
@@ -67,13 +83,16 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
      * 虽然这两个的操作自身都是原子的，但两个合起来的事物却是非原子的，所以会出现不一致，因而需要加锁
      */
     private void doConsume() {
+        C old = null;
         try {
             if (writeLock != null) {
                 writeLock.lock();
             }
-            C old = buffer.getAndSet(bufferFactory.get());
-            consumer.accept(old);
+            old = buffer.getAndSet(bufferFactory.get());
             counter.set(0L);
+            if (writeCondition != null) {
+                writeCondition.signalAll();
+            }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
@@ -81,7 +100,7 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
                 writeLock.unlock();
             }
         }
-
+        consumer.accept(old);
     }
 
     @Override
@@ -102,9 +121,11 @@ public class SimpleBufferTrigger<E, C> implements BufferTrigger<E> {
             ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
             readLock = lock.readLock();
             writeLock = lock.writeLock();
+            writeCondition = writeLock.newCondition();
         } else {
             readLock = null;
             writeLock = null;
+            writeCondition = null;
         }
         builder.scheduledExecutorService.schedule(new Runnable() {
             @Override

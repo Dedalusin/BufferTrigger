@@ -2,6 +2,7 @@ package org.dedalusin.collection.impl;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.locks.Condition;
 import java.util.function.*;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
@@ -18,11 +19,19 @@ public class SimpleBufferTriggerBuilder<C, E> {
     LongSupplier interval = () -> 1000L;
     Supplier<C> bufferFactory;
     BiPredicate<C, E> bufferAdder;
-    Consumer<E> rejectHandler;
+    RejectHandler<E> rejectHandler;
     Consumer<C> consumer;
     boolean isInnerExecutor = false;
 
     boolean disableSwitchLock = false;
+
+    public SimpleBufferTriggerBuilder enableBackPressure(BackPressureListener<E> backPressureListener) {
+        if (this.rejectHandler != null) {
+            throw new IllegalStateException("when enable backPressure, rejectHandler can't be set");
+        }
+        this.rejectHandler = new BackPressureHandler<>(backPressureListener);
+        return this;
+    }
 
     public SimpleBufferTriggerBuilder setDisableSwitchLock(boolean disableSwitchLock) {
         this.disableSwitchLock = disableSwitchLock;
@@ -52,7 +61,10 @@ public class SimpleBufferTriggerBuilder<C, E> {
     }
 
     public SimpleBufferTriggerBuilder setRejectHandler(Consumer<E> rejectHandler) {
-        this.rejectHandler = rejectHandler;
+        this.rejectHandler = (e, condition) -> {
+            rejectHandler.accept(e);
+            return true;
+        };
         return this;
     }
 
@@ -82,9 +94,6 @@ public class SimpleBufferTriggerBuilder<C, E> {
         if (this.scheduledExecutorService == null) {
             this.scheduledExecutorService = makeScheduleExecutorService();
             this.isInnerExecutor = true;
-        }
-        if (rejectHandler == null) {
-            this.rejectHandler = (e) -> {};
         }
         if (consumer == null) {
             throw new RuntimeException("should set consumer");
